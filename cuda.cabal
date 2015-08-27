@@ -86,15 +86,7 @@ Library
   Extensions:
   ghc-options:          -Wall -O2 -funbox-strict-fields -fwarn-tabs
   ghc-prof-options:     -fprof-auto -fprof-cafs
-
-
-Executable nvidia-device-query
-  Main-is:              DeviceQuery.hs
-  hs-source-dirs:       examples/src/deviceQueryDrv
-
-  Build-depends:        base >= 4 && < 5,
-                        cuda,
-                        pretty
+  Extra-libraries:      cudart, cuda
 
 
 source-repository head

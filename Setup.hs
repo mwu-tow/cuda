@@ -10,15 +10,117 @@ import Distribution.Simple.Program
 import Distribution.Simple.LocalBuildInfo
 import Distribution.Simple.PreProcess           hiding (ppC2hs)
 
+import Text.Printf
 import Control.Exception
 import Control.Monad
-import System.Exit                              hiding (die)
+import System.Exit
 import System.FilePath
 import System.Directory
 import System.Environment
 import System.IO.Error                          hiding (catch)
 import Prelude                                  hiding (catch)
 
+newtype CudaPath = CudaPath {
+  cudaPath :: String
+}
+
+getCudaIncludePath :: CudaPath -> FilePath
+getCudaIncludePath (CudaPath path) = path </> "include"
+
+getCudaLibraryPath :: CudaPath -> Arch -> FilePath
+getCudaLibraryPath (CudaPath path) platform = path </> "lib" </> platformName
+  where platformName = case platform of
+         I386    -> "Win32"
+         X86_64  -> "x64"
+
+getCudaLibraries :: [String]
+getCudaLibraries = ["cudart", "cuda"]
+
+cudaLibraryBuildInfo :: CudaPath -> Arch -> HookedBuildInfo
+cudaLibraryBuildInfo cudaPath arch = (Just buildInfo, [])
+    where
+      buildInfo = emptyBuildInfo { 
+        ccOptions = includeDirCcFlags,
+        ldOptions = libDirCcFlags, 
+        extraLibs = getCudaLibraries, 
+        extraLibDirs = libDirs, 
+        options = [(GHC, (map ("-optc" ++) includeDirCcFlags) ++ (map ("-optl" ++ ) libDirCcFlags))], 
+        -- options = [(GHC,["-optc-IC:/CUDA/Toolkit/include","-optl-LC:/CUDA/Toolkit/lib/Win32"])],
+        customFieldsBI = [(c2hsOptionsFieldName,c2hsOptionsValue)]
+      }
+      includeDirCcFlags = map ("-I" ++) includeDirs :: [FilePath]
+      libDirCcFlags = map ("-L" ++) libDirs :: [FilePath]
+      includeDirs = [getCudaIncludePath cudaPath]
+      libDirs = [getCudaLibraryPath cudaPath arch]
+      c2hsOptionsFieldName = "x-extra-c2hs-options"
+      c2hsOptionsValue = "--cppopts=-E -v --cppopts=" ++ cppArchitectureFlag
+      cppArchitectureFlag = case arch of 
+        I386   -> "-m32"
+        X86_64 -> "-m64"
+      (Just emptyBuildInfo, []) = emptyHookedBuildInfo
+
+-- Checks whether given location looks like a valid CUDA toolkit directory
+validateLocation :: FilePath -> IO Bool
+validateLocation path = do
+  let testedPath = path </> "include" </> "cuda.h"
+  ret <- doesFileExist testedPath
+  putStrLn $ printf "The path %s was %s." path (if ret then "accepted" else "rejected, because file " ++ testedPath ++ " does not exist")
+  return ret
+
+-- Evaluates IO to obtain the path, handling any possible exceptions. 
+-- If path is evaluable and points to valid CUDA toolkit returns True.
+validateIOLocation :: IO FilePath -> IO Bool
+validateIOLocation iopath = do
+  let handler = (\e -> do putStrLn ("Encountered an exception when resolving location: " ++ show e); return False) :: IOError -> IO Bool
+  catch (iopath >>= validateLocation) (handler)
+
+
+findFirstValidLocation :: [(IO FilePath, String)] -> IO (Maybe FilePath)
+findFirstValidLocation [] = return Nothing
+findFirstValidLocation (mx:mxs) = do
+  putStrLn $ "Checking candidate location: " ++ snd mx
+  headMatches <- validateIOLocation $ fst mx
+  if headMatches 
+    then do x <- (fst mx )
+            return $ Just x
+    else findFirstValidLocation mxs
+
+candidateCudaLocation :: [(IO FilePath, String)]
+candidateCudaLocation =
+  [
+    env "CUDA_PATdH", 
+    env "OS", 
+    (nvccLocation, "nvcc compiler visible in PATH"), 
+    env "CUDA_PATH"
+  ]
+  where
+    env s = (getEnv s, "environment variable `" ++ s ++ "`")
+    nvccLocation :: IO FilePath
+    nvccLocation = do
+      -- FIXME this pattern match causes bad error message, handle it and pretty-print
+      Just nvccPath <- findProgramLocation normal "nvc3c"
+
+      -- The obtained path is likely TOOLKIT/bin/nvcc 
+      -- We want to extraxt the TOOLKIT part
+      let ret = takeDirectory $ takeDirectory nvccPath 
+      return ret
+
+
+-- Try to locate CUDA installation on the drive. 
+-- Currently this means (in order)
+--  1) Checking the CUDA_PATH environment variable
+--  2) Looking for `nvcc` in `PATH`
+--  [TODO] 3) A few hardcodeed, default locations
+findCudaLocation :: IO FilePath
+findCudaLocation = do
+  firstValidLocation <- findFirstValidLocation candidateCudaLocation
+  case firstValidLocation of
+    Just validLocation -> do
+      putStrLn $ "Found CUDA toolkit under the following path: " ++ validLocation
+      return validLocation
+    Nothing -> do
+      -- allPaths <- sequence candidates
+      die $ "Failed to found CUDA location. Candidate locations were: " ++ show (map snd candidateCudaLocation)
 
 -- Replicate the invocation of the postConf script, so that we can insert the
 -- arguments of --extra-include-dirs and --extra-lib-dirs as paths in CPPFLAGS
@@ -36,66 +138,65 @@ main = defaultMainWithHooks customHooks
 
     preConfHook :: Args -> ConfigFlags -> IO HookedBuildInfo
     preConfHook args flags = do
-      let verbosity = fromFlag (configVerbosity flags)
-
-      confExists <- doesFileExist "configure"
-      unless confExists $ do
-        code <- rawSystemExitCode verbosity "autoconf" []
-        case code of
-          ExitSuccess   -> return ()
-          ExitFailure c -> die $ "autoconf exited with code " ++ show c
-
-      preConf autoconfUserHooks args flags
+      -- putStrLn $ show flags
+      preConf simpleUserHooks args flags
 
     postConfHook :: Args -> ConfigFlags -> PackageDescription -> LocalBuildInfo -> IO ()
     postConfHook args flags pkg_descr lbi
       = let verbosity = fromFlag (configVerbosity flags)
         in do
+          putStrLn $ show flags
+          putStrLn "============================================"
+          putStrLn $ show pkg_descr
+          putStrLn "============================================"
+          putStrLn $ show $ hostPlatform $ lbi
+          cudalocation <- findCudaLocation
+          putStrLn cudalocation
           noExtraFlags args
-          confExists <- doesFileExist "configure"
-          if confExists
-             then runConfigureScript verbosity False flags lbi
-             else die "configure script not found."
+          -- confExists <- doesFileExist "configure"
+          -- if confExists
+          --    then runConfigureScript verbosity False flags lbi
+          --    else die "configure script not found."
 
           pbi <- getHookedBuildInfo verbosity
           let pkg_descr' = updatePackageDescription pbi pkg_descr
           postConf simpleUserHooks args flags pkg_descr' lbi
 
 
-runConfigureScript :: Verbosity -> Bool -> ConfigFlags -> LocalBuildInfo -> IO ()
-runConfigureScript verbosity backwardsCompatHack flags lbi = do
-  env               <- getEnvironment
-  (ccProg, ccFlags) <- configureCCompiler verbosity (withPrograms lbi)
+-- runConfigureScript :: Verbosity -> Bool -> ConfigFlags -> LocalBuildInfo -> IO ()
+-- runConfigureScript verbosity backwardsCompatHack flags lbi = do
+--   env               <- getEnvironment
+--   (ccProg, ccFlags) <- configureCCompiler verbosity (withPrograms lbi)
 
-  let env' = foldr appendToEnvironment env
-               [("CC",       ccProg)
-               ,("CFLAGS",   unwords ccFlags)
-               ,("CPPFLAGS", unwords $ map ("-I"++) (configExtraIncludeDirs flags))
-               ,("LDFLAGS",  unwords $ map ("-L"++) (configExtraLibDirs flags))
-               ]
+--   let env' = foldr appendToEnvironment env
+--                [("CC",       ccProg)
+--                ,("CFLAGS",   unwords ccFlags)
+--                ,("CPPFLAGS", unwords $ map ("-I"++) (configExtraIncludeDirs flags))
+--                ,("LDFLAGS",  unwords $ map ("-L"++) (configExtraLibDirs flags))
+--                ]
 
-  handleNoWindowsSH $ rawSystemExitWithEnv verbosity "sh" args env'
+--   handleNoWindowsSH $ rawSystemExitWithEnv verbosity "sh" args env'
 
-  where
-    args = "configure" : configureArgs backwardsCompatHack flags
+--   where
+--     args = "configure" : configureArgs backwardsCompatHack flags
 
-    appendToEnvironment (key, val) [] = [(key, val)]
-    appendToEnvironment (key, val) (kv@(k, v) : rest)
-     | key == k  = (key, v ++ " " ++ val) : rest
-     | otherwise = kv : appendToEnvironment (key, val) rest
+--     appendToEnvironment (key, val) [] = [(key, val)]
+--     appendToEnvironment (key, val) (kv@(k, v) : rest)
+--      | key == k  = (key, v ++ " " ++ val) : rest
+--      | otherwise = kv : appendToEnvironment (key, val) rest
 
-    handleNoWindowsSH action
-      | buildOS /= Windows
-      = action
+--     handleNoWindowsSH action
+--       | buildOS /= Windows
+--       = action
 
-      | otherwise
-      = action
-          `catch` \ioe -> if isDoesNotExistError ioe
-                              then die notFoundMsg
-                              else throwIO ioe
+--       | otherwise
+--       = action
+--           `catch` \ioe -> if isDoesNotExistError ioe
+--                               then die notFoundMsg
+--                               else throwIO ioe
 
-    notFoundMsg = "The package has a './configure' script. This requires a "
-               ++ "Unix compatibility toolchain such as MinGW+MSYS or Cygwin."
+--     notFoundMsg = "The package has a './configure' script. This requires a "
+--                ++ "Unix compatibility toolchain such as MinGW+MSYS or Cygwin."
 
 
 getHookedBuildInfo :: Verbosity -> IO HookedBuildInfo
