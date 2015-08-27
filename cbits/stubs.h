@@ -5,7 +5,7 @@
 #ifndef C_STUBS_H
 #define C_STUBS_H
 
-#if defined(mingw32_TARGET_OS)
+#ifdef __MINGW32__
 #include <host_defines.h>
 #undef CUDARTAPI
 #define CUDARTAPI __stdcall

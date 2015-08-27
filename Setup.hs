@@ -22,7 +22,7 @@ import Prelude                                  hiding (catch)
 
 newtype CudaPath = CudaPath {
   cudaPath :: String
-}
+} deriving (Eq, Ord, Show, Read)
 
 getCudaIncludePath :: CudaPath -> FilePath
 getCudaIncludePath (CudaPath path) = path </> "include"
@@ -39,15 +39,14 @@ getCudaLibraries = ["cudart", "cuda"]
 cudaLibraryBuildInfo :: CudaPath -> Arch -> HookedBuildInfo
 cudaLibraryBuildInfo cudaPath arch = (Just buildInfo, [])
     where
-      buildInfo = emptyBuildInfo { 
-        ccOptions = includeDirCcFlags,
-        ldOptions = libDirCcFlags, 
-        extraLibs = getCudaLibraries, 
-        extraLibDirs = libDirs, 
-        options = [(GHC, (map ("-optc" ++) includeDirCcFlags) ++ (map ("-optl" ++ ) libDirCcFlags))], 
-        -- options = [(GHC,["-optc-IC:/CUDA/Toolkit/include","-optl-LC:/CUDA/Toolkit/lib/Win32"])],
-        customFieldsBI = [(c2hsOptionsFieldName,c2hsOptionsValue)]
-      }
+      buildInfo = emptyBuildInfo 
+        { ccOptions = includeDirCcFlags -- "-Dmingw32_TARGET_OS=1" : includeDirCcFlags,
+        , ldOptions = libDirCcFlags
+        , extraLibs = getCudaLibraries
+        -- , extraLibDirs = libDirs, 
+        -- , options = [(GHC, (map ("-optc" ++) includeDirCcFlags) ++ (map ("-optl" ++ ) libDirCcFlags))], 
+        , customFieldsBI = [(c2hsOptionsFieldName,c2hsOptionsValue)]
+        }
       includeDirCcFlags = map ("-I" ++) includeDirs :: [FilePath]
       libDirCcFlags = map ("-L" ++) libDirs :: [FilePath]
       includeDirs = [getCudaIncludePath cudaPath]
@@ -57,7 +56,6 @@ cudaLibraryBuildInfo cudaPath arch = (Just buildInfo, [])
       cppArchitectureFlag = case arch of 
         I386   -> "-m32"
         X86_64 -> "-m64"
-      (Just emptyBuildInfo, []) = emptyHookedBuildInfo
 
 -- Checks whether given location looks like a valid CUDA toolkit directory
 validateLocation :: FilePath -> IO Bool
@@ -111,13 +109,13 @@ candidateCudaLocation =
 --  1) Checking the CUDA_PATH environment variable
 --  2) Looking for `nvcc` in `PATH`
 --  [TODO] 3) A few hardcodeed, default locations
-findCudaLocation :: IO FilePath
+findCudaLocation :: IO CudaPath
 findCudaLocation = do
   firstValidLocation <- findFirstValidLocation candidateCudaLocation
   case firstValidLocation of
     Just validLocation -> do
       putStrLn $ "Found CUDA toolkit under the following path: " ++ validLocation
-      return validLocation
+      return $ CudaPath validLocation
     Nothing -> do
       -- allPaths <- sequence candidates
       die $ "Failed to found CUDA location. Candidate locations were: " ++ show (map snd candidateCudaLocation)
@@ -145,23 +143,35 @@ main = defaultMainWithHooks customHooks
     postConfHook args flags pkg_descr lbi
       = let verbosity = fromFlag (configVerbosity flags)
         in do
-          putStrLn $ show flags
-          putStrLn "============================================"
-          putStrLn $ show pkg_descr
-          putStrLn "============================================"
-          putStrLn $ show $ hostPlatform $ lbi
+          -- putStrLn $ show flags
+          -- putStrLn "============================================"
+          -- putStrLn $ show pkg_descr
+          -- putStrLn "============================================"
+          -- putStrLn $ show $ hostPlatform $ lbi
           cudalocation <- findCudaLocation
-          putStrLn cudalocation
+          -- putStrLn cudalocation
+          let (Platform arch os) = hostPlatform lbi
           noExtraFlags args
           -- confExists <- doesFileExist "configure"
           -- if confExists
           --    then runConfigureScript verbosity False flags lbi
           --    else die "configure script not found."
 
-          pbi <- getHookedBuildInfo verbosity
+          let pbi = cudaLibraryBuildInfo cudalocation arch
+          storeHookedBuildInfo pbi normal
+          --pbi <- getHookedBuildInfo verbosity
           let pkg_descr' = updatePackageDescription pbi pkg_descr
           postConf simpleUserHooks args flags pkg_descr' lbi
 
+
+storeHookedBuildInfo :: HookedBuildInfo -> Verbosity -> IO ()
+storeHookedBuildInfo hbi verbosity = do
+  maybe_infoFile <- defaultHookedPackageDesc
+  case maybe_infoFile of
+    Nothing       -> return ()
+    Just infoFile -> do
+      info verbosity $ "Writing parameters to " ++ infoFile
+      writeHookedBuildInfo infoFile hbi
 
 -- runConfigureScript :: Verbosity -> Bool -> ConfigFlags -> LocalBuildInfo -> IO ()
 -- runConfigureScript verbosity backwardsCompatHack flags lbi = do
