@@ -86,7 +86,7 @@ findFirstValidLocation (mx:mxs) = do
     else findFirstValidLocation mxs
 
 nvccProgramName :: String
-nvccProgramName = "nvc3c"
+nvccProgramName = "nvcc"
 
 -- NOTE: this function throws an exception when there is no `nvcc` in PATH.
 -- The exception contains meaningful message.
