@@ -27,30 +27,36 @@ newtype CudaPath = CudaPath {
 getCudaIncludePath :: CudaPath -> FilePath
 getCudaIncludePath (CudaPath path) = path </> "include"
 
-getCudaLibraryPath :: CudaPath -> Arch -> FilePath
-getCudaLibraryPath (CudaPath path) platform = path </> "lib" </> platformName
-  where platformName = case platform of
+getCudaLibraryPath :: CudaPath -> Platform -> FilePath
+getCudaLibraryPath (CudaPath path) (Platform arch os) = path </> libSubpath
+  where 
+    libSubpath = case os of
+      Windows -> "lib" </> case arch of
          I386    -> "Win32"
          X86_64  -> "x64"
+      -- For now just treat all non-Windows systems similarly
+      _ -> case arch of
+         I386    -> "lib"
+         X86_64  -> "lib64"
 
 getCudaLibraries :: [String]
 getCudaLibraries = ["cudart", "cuda"]
 
-cudaLibraryBuildInfo :: CudaPath -> Arch -> HookedBuildInfo
-cudaLibraryBuildInfo cudaPath arch = (Just buildInfo, [])
+cudaLibraryBuildInfo :: CudaPath -> Platform -> HookedBuildInfo
+cudaLibraryBuildInfo cudaPath platform@(Platform arch os) = (Just buildInfo, [])
     where
       buildInfo = emptyBuildInfo 
         { ccOptions = includeDirCcFlags -- "-Dmingw32_TARGET_OS=1" : includeDirCcFlags,
         , ldOptions = libDirCcFlags
         , extraLibs = getCudaLibraries
-        -- , extraLibDirs = libDirs, 
+        , extraLibDirs = libDirs  -- Extra lib dirs are not needed on Windows somehow. On Linux their lack would cause an error: /usr/bin/ld: cannot find -lcudart
         -- , options = [(GHC, (map ("-optc" ++) includeDirCcFlags) ++ (map ("-optl" ++ ) libDirCcFlags))], 
         , customFieldsBI = [(c2hsOptionsFieldName,c2hsOptionsValue)]
         }
       includeDirCcFlags = map ("-I" ++) includeDirs :: [FilePath]
       libDirCcFlags = map ("-L" ++) libDirs :: [FilePath]
       includeDirs = [getCudaIncludePath cudaPath]
-      libDirs = [getCudaLibraryPath cudaPath arch]
+      libDirs = [getCudaLibraryPath cudaPath platform]
       c2hsOptionsFieldName = "x-extra-c2hs-options"
       c2hsOptionsValue = "--cppopts=-E -v --cppopts=" ++ cppArchitectureFlag
       cppArchitectureFlag = case arch of 
@@ -152,21 +158,15 @@ main = defaultMainWithHooks customHooks
     postConfHook args flags pkg_descr lbi
       = let verbosity = fromFlag (configVerbosity flags)
         in do
-          -- putStrLn $ show flags
-          -- putStrLn "============================================"
-          -- putStrLn $ show pkg_descr
-          -- putStrLn "============================================"
-          -- putStrLn $ show $ hostPlatform $ lbi
           cudalocation <- findCudaLocation
-          -- putStrLn cudalocation
-          let (Platform arch os) = hostPlatform lbi
+          let currentPlatform = hostPlatform lbi
           noExtraFlags args
           -- confExists <- doesFileExist "configure"
           -- if confExists
           --    then runConfigureScript verbosity False flags lbi
           --    else die "configure script not found."
 
-          let pbi = cudaLibraryBuildInfo cudalocation arch
+          let pbi = cudaLibraryBuildInfo cudalocation currentPlatform
           storeHookedBuildInfo pbi normal
           --pbi <- getHookedBuildInfo verbosity
           let pkg_descr' = updatePackageDescription pbi pkg_descr
@@ -175,12 +175,9 @@ main = defaultMainWithHooks customHooks
 
 storeHookedBuildInfo :: HookedBuildInfo -> Verbosity -> IO ()
 storeHookedBuildInfo hbi verbosity = do
-  maybe_infoFile <- defaultHookedPackageDesc
-  case maybe_infoFile of
-    Nothing       -> return ()
-    Just infoFile -> do
-      info verbosity $ "Writing parameters to " ++ infoFile
-      writeHookedBuildInfo infoFile hbi
+    let infoFile = "cuda" <.> "buildinfo"
+    putStrLn $ "Writing parameters to " ++ infoFile
+    writeHookedBuildInfo infoFile hbi
 
 -- runConfigureScript :: Verbosity -> Bool -> ConfigFlags -> LocalBuildInfo -> IO ()
 -- runConfigureScript verbosity backwardsCompatHack flags lbi = do
