@@ -60,6 +60,8 @@ cudaLibraryBuildInfo cudaPath arch = (Just buildInfo, [])
 -- Checks whether given location looks like a valid CUDA toolkit directory
 validateLocation :: FilePath -> IO Bool
 validateLocation path = do
+  -- TODO: Ideally this should check also for cudart.lib and whether cudart exports relevant symbols.
+  -- I don't know any Haskell packages dealing with COFF files
   let testedPath = path </> "include" </> "cuda.h"
   ret <- doesFileExist testedPath
   putStrLn $ printf "The path %s was %s." path (if ret then "accepted" else "rejected, because file " ++ testedPath ++ " does not exist")
@@ -83,21 +85,30 @@ findFirstValidLocation (mx:mxs) = do
             return $ Just x
     else findFirstValidLocation mxs
 
+nvccProgramName :: String
+nvccProgramName = "nvc3c"
+
+-- NOTE: this function throws an exception when there is no `nvcc` in PATH.
+-- The exception contains meaningful message.
+lookupProgramThrowing :: String -> IO FilePath
+lookupProgramThrowing execName = do
+  location <- findProgramLocation normal execName
+  case location of
+    Just validLocation -> return validLocation
+    Nothing -> ioError $ mkIOError doesNotExistErrorType ("findProgramLocation failed to found `"++ execName ++"`") Nothing Nothing
+
 candidateCudaLocation :: [(IO FilePath, String)]
 candidateCudaLocation =
   [
-    env "CUDA_PATdH", 
-    env "OS", 
+    env "CUDA_PATH", 
     (nvccLocation, "nvcc compiler visible in PATH"), 
-    env "CUDA_PATH"
+    (return "/usr/local/cuda", "hard-coded possible path")
   ]
   where
     env s = (getEnv s, "environment variable `" ++ s ++ "`")
     nvccLocation :: IO FilePath
     nvccLocation = do
-      -- FIXME this pattern match causes bad error message, handle it and pretty-print
-      Just nvccPath <- findProgramLocation normal "nvc3c"
-
+      nvccPath <- lookupProgramThrowing nvccProgramName
       -- The obtained path is likely TOOLKIT/bin/nvcc 
       -- We want to extraxt the TOOLKIT part
       let ret = takeDirectory $ takeDirectory nvccPath 
@@ -108,7 +119,6 @@ candidateCudaLocation =
 -- Currently this means (in order)
 --  1) Checking the CUDA_PATH environment variable
 --  2) Looking for `nvcc` in `PATH`
---  [TODO] 3) A few hardcodeed, default locations
 findCudaLocation :: IO CudaPath
 findCudaLocation = do
   firstValidLocation <- findFirstValidLocation candidateCudaLocation
@@ -123,7 +133,6 @@ findCudaLocation = do
 -- Replicate the invocation of the postConf script, so that we can insert the
 -- arguments of --extra-include-dirs and --extra-lib-dirs as paths in CPPFLAGS
 -- and LDFLAGS into the environment
---
 main :: IO ()
 main = defaultMainWithHooks customHooks
   where
