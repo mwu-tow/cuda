@@ -34,10 +34,12 @@ getCudaLibraryPath (CudaPath path) (Platform arch os) = path </> libSubpath
       Windows -> "lib" </> case arch of
          I386    -> "Win32"
          X86_64  -> "x64"
+         _       -> error $ "Unexpected Windows architecture " ++ show arch ++ ". Please report this issue to https://github.com/tmcdonell/cuda/issues"
       -- For now just treat all non-Windows systems similarly
       _ -> case arch of
          I386    -> "lib"
          X86_64  -> "lib64"
+         _       -> "lib"  -- TODO how should this be handled?
 
 getCudaLibraries :: [String]
 getCudaLibraries = ["cudart", "cuda"]
@@ -125,6 +127,7 @@ candidateCudaLocation =
 -- Currently this means (in order)
 --  1) Checking the CUDA_PATH environment variable
 --  2) Looking for `nvcc` in `PATH`
+--  3) Checking /usr/local/cuda
 findCudaLocation :: IO CudaPath
 findCudaLocation = do
   firstValidLocation <- findFirstValidLocation candidateCudaLocation
