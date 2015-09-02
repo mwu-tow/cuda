@@ -10,6 +10,11 @@ import Distribution.Simple.Program
 import Distribution.Simple.LocalBuildInfo
 import Distribution.Simple.PreProcess           hiding (ppC2hs)
 
+import Distribution.Simple.BuildPaths
+
+import Data.List hiding (isInfixOf)
+import Data.Maybe
+
 import Text.Printf
 import Control.Exception
 import Control.Monad
@@ -24,12 +29,43 @@ newtype CudaPath = CudaPath {
   cudaPath :: String
 } deriving (Eq, Ord, Show, Read)
 
+
+-- CUDA toolkit uses different names for import libraries and their respective DLLs.
+-- Eg. `cudart.lib` imports functions from `cudart32_70` (on 32-bit architecture and 7.0 version of toolkit).
+-- The ghci linker fails to resolve this. Therefore, it needs to be given the DLL filenames
+-- as `extra-ghci-libraries` option.
+--
+-- This function takes *a path to* import library and returns name of corresponding DLL.
+-- Eg: "C:/CUDA/Toolkit/Win32/cudart.lib" -> "cudart32_70.dll"
+-- Internally it assumes that nm tool is present in PATH. This should be always true, as nm is distributed along with GHC.
+importLibraryToDllFileName :: FilePath -> IO (Maybe FilePath)
+importLibraryToDllFileName importLibPath = do
+  -- Sample output nm generates on cudart.lib
+  -- nvcuda.dll:
+  -- 00000000 i .idata$2
+  -- 00000000 i .idata$4
+  -- 00000000 i .idata$5
+  -- 00000000 i .idata$6
+  -- 009c9d1b a @comp.id
+  -- 00000000 I __IMPORT_DESCRIPTOR_nvcuda
+  --          U __NULL_IMPORT_DESCRIPTOR
+  --          U nvcuda_NULL_THUNK_DATA
+  nmOutput <- getProgramInvocationOutput normal (simpleProgramInvocation "nm" [importLibPath])
+  return $ find (isInfixOf ("" <.> dllExtension)) (lines nmOutput)
+
+additionalGhciLibraries :: FilePath -> [FilePath] -> IO [FilePath]
+additionalGhciLibraries libdir importLibs = do
+    candidateNames <- mapM importLibraryToDllFileName (map (\libname -> libdir </> libname <.> "lib") importLibs)
+    let dllNames = map (\(Just dllname) -> dropExtension dllname) (filter isJust candidateNames)
+    print dllNames
+    return dllNames
+
 getCudaIncludePath :: CudaPath -> FilePath
 getCudaIncludePath (CudaPath path) = path </> "include"
 
 getCudaLibraryPath :: CudaPath -> Platform -> FilePath
 getCudaLibraryPath (CudaPath path) (Platform arch os) = path </> libSubpath
-  where 
+  where
     libSubpath = case os of
       Windows -> "lib" </> case arch of
          I386    -> "Win32"
@@ -44,38 +80,50 @@ getCudaLibraryPath (CudaPath path) (Platform arch os) = path </> libSubpath
 getCudaLibraries :: [String]
 getCudaLibraries = ["cudart", "cuda"]
 
-cudaLibraryBuildInfo :: CudaPath -> Platform -> HookedBuildInfo
-cudaLibraryBuildInfo cudaPath platform@(Platform arch os) = (Just buildInfo, [])
-    where
-      buildInfo = emptyBuildInfo 
-        { ccOptions = includeDirCcFlags -- "-Dmingw32_TARGET_OS=1" : includeDirCcFlags,
-        , ldOptions = libDirCcFlags
-        , extraLibs = getCudaLibraries
-        , extraLibDirs = libDirs  -- Extra lib dirs are not needed on Windows somehow. On Linux their lack would cause an error: /usr/bin/ld: cannot find -lcudart
-        -- , options = [(GHC, (map ("-optc" ++) includeDirCcFlags) ++ (map ("-optl" ++ ) libDirCcFlags))], 
-        , customFieldsBI = [(c2hsOptionsFieldName,c2hsOptionsValue)]
-        }
-      includeDirCcFlags = map ("-I" ++) includeDirs :: [FilePath]
-      libDirCcFlags = map ("-L" ++) libDirs :: [FilePath]
-      includeDirs = [getCudaIncludePath cudaPath]
-      libDirs = [getCudaLibraryPath cudaPath platform]
-      c2hsOptionsFieldName = "x-extra-c2hs-options"
-      c2hsOptionsValue = "--cppopts=-E -v --cppopts=" ++ cppArchitectureFlag
-      cppArchitectureFlag = case arch of 
-        I386   -> "-m32"
-        X86_64 -> "-m64"
+cudaLibraryBuildInfo :: CudaPath -> Platform -> IO HookedBuildInfo
+cudaLibraryBuildInfo cudaPath platform@(Platform arch os) = do
+    let cppArchitectureFlag = case arch of
+          I386   -> "-m32"
+          X86_64 -> "-m64"
+    let cudaLibraryPath = getCudaLibraryPath cudaPath platform
+    -- Extra lib dirs are not needed on Windows somehow. On Linux their lack would cause an error: /usr/bin/ld: cannot find -lcudart
+    -- Still, they do not cause harm so let's have them regardless of OS.
+    let extraLibDirs_ = [cudaLibraryPath]
+    let includeDirs = [getCudaIncludePath cudaPath]
+    let ccOptions_ = map ("-I" ++) includeDirs
+    let ldOptions_ = map ("-L" ++) extraLibDirs_
+    let c2hsOptionsFieldName = "x-extra-c2hs-options"
+    let c2hsOptionsValue = "--cppopts=-E -v --cppopts=" ++ cppArchitectureFlag
+    let extraLibs_ = getCudaLibraries
+
+    -- Workaround issue with ghci linker not being able to find DLLs with names different from their import LIBs.
+    extraGHCiLibs_ <- case os of
+            Windows -> additionalGhciLibraries cudaLibraryPath extraLibs_
+            _       -> return []
+
+
+    let buildInfo = emptyBuildInfo
+            { ccOptions = ccOptions_
+            , ldOptions = ldOptions_
+            , extraLibs = extraLibs_
+            , extraLibDirs = extraLibDirs_
+            -- , options = [(GHC, (map ("-optc" ++) includeDirCcFlags) ++ (map ("-optl" ++ ) libDirCcFlags))],
+            , extraGHCiLibs = extraGHCiLibs_
+            , customFieldsBI = [(c2hsOptionsFieldName,c2hsOptionsValue)]
+            }
+    return (Just buildInfo, [])
 
 -- Checks whether given location looks like a valid CUDA toolkit directory
 validateLocation :: FilePath -> IO Bool
 validateLocation path = do
   -- TODO: Ideally this should check also for cudart.lib and whether cudart exports relevant symbols.
-  -- I don't know any Haskell packages dealing with COFF files
+  -- This should be achievable with some `nm` trickery
   let testedPath = path </> "include" </> "cuda.h"
   ret <- doesFileExist testedPath
   putStrLn $ printf "The path %s was %s." path (if ret then "accepted" else "rejected, because file " ++ testedPath ++ " does not exist")
   return ret
 
--- Evaluates IO to obtain the path, handling any possible exceptions. 
+-- Evaluates IO to obtain the path, handling any possible exceptions.
 -- If path is evaluable and points to valid CUDA toolkit returns True.
 validateIOLocation :: IO FilePath -> IO Bool
 validateIOLocation iopath = do
@@ -88,7 +136,7 @@ findFirstValidLocation [] = return Nothing
 findFirstValidLocation (mx:mxs) = do
   putStrLn $ "Checking candidate location: " ++ snd mx
   headMatches <- validateIOLocation $ fst mx
-  if headMatches 
+  if headMatches
     then do x <- (fst mx )
             return $ Just x
     else findFirstValidLocation mxs
@@ -108,8 +156,8 @@ lookupProgramThrowing execName = do
 candidateCudaLocation :: [(IO FilePath, String)]
 candidateCudaLocation =
   [
-    env "CUDA_PATH", 
-    (nvccLocation, "nvcc compiler visible in PATH"), 
+    env "CUDA_PATH",
+    (nvccLocation, "nvcc compiler visible in PATH"),
     (return "/usr/local/cuda", "hard-coded possible path")
   ]
   where
@@ -117,13 +165,13 @@ candidateCudaLocation =
     nvccLocation :: IO FilePath
     nvccLocation = do
       nvccPath <- lookupProgramThrowing nvccProgramName
-      -- The obtained path is likely TOOLKIT/bin/nvcc 
+      -- The obtained path is likely TOOLKIT/bin/nvcc
       -- We want to extraxt the TOOLKIT part
-      let ret = takeDirectory $ takeDirectory nvccPath 
+      let ret = takeDirectory $ takeDirectory nvccPath
       return ret
 
 
--- Try to locate CUDA installation on the drive. 
+-- Try to locate CUDA installation on the drive.
 -- Currently this means (in order)
 --  1) Checking the CUDA_PATH environment variable
 --  2) Looking for `nvcc` in `PATH`
@@ -169,16 +217,20 @@ main = defaultMainWithHooks customHooks
           --    then runConfigureScript verbosity False flags lbi
           --    else die "configure script not found."
 
-          let pbi = cudaLibraryBuildInfo cudalocation currentPlatform
+          pbi <- cudaLibraryBuildInfo cudalocation currentPlatform
           storeHookedBuildInfo pbi normal
           --pbi <- getHookedBuildInfo verbosity
           let pkg_descr' = updatePackageDescription pbi pkg_descr
           postConf simpleUserHooks args flags pkg_descr' lbi
 
 
+hookedBuildinfoFilepath :: FilePath
+hookedBuildinfoFilepath = "cuda" <.> "buildinfo"
+
 storeHookedBuildInfo :: HookedBuildInfo -> Verbosity -> IO ()
 storeHookedBuildInfo hbi verbosity = do
-    let infoFile = "cuda" <.> "buildinfo"
+    --let infoFile = hookedBuildinfoFilepath <.> "generated"
+    let infoFile = hookedBuildinfoFilepath
     putStrLn $ "Writing parameters to " ++ infoFile
     writeHookedBuildInfo infoFile hbi
 
