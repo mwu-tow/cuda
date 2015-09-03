@@ -41,11 +41,6 @@ Extra-tmp-files:        cuda.buildinfo
 
 Extra-source-files:     cbits/stubs.h
                         changelog.md
-                        config.guess
-                        config.sub
-                        configure
-                        configure.ac
-                        cuda.buildinfo.in
                         install-sh
 
 Library
