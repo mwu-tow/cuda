@@ -13,7 +13,7 @@ import Distribution.Simple.PreProcess           hiding (ppC2hs)
 import Text.Printf
 import Control.Exception
 import Control.Monad
-import System.Exit
+import System.Exit                              hiding (die)
 import System.FilePath
 import System.Directory
 import System.Environment
