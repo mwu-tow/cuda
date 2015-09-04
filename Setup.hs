@@ -148,7 +148,7 @@ validateLocation path = do
 validateIOLocation :: IO FilePath -> IO Bool
 validateIOLocation iopath = do
   let handler = (\e -> do putStrLn ("Encountered an exception when resolving location: " ++ show e); return False) :: IOError -> IO Bool
-  catch (iopath >>= validateLocation) (handler)
+  catch (iopath >>= validateLocation) handler
 
 
 findFirstValidLocation :: [(IO FilePath, String)] -> IO (Maybe FilePath)
@@ -157,7 +157,7 @@ findFirstValidLocation (mx:mxs) = do
   putStrLn $ "Checking candidate location: " ++ snd mx
   headMatches <- validateIOLocation $ fst mx
   if headMatches
-    then do x <- (fst mx )
+    then do x <- fst mx
             return $ Just x
     else findFirstValidLocation mxs
 
@@ -203,9 +203,7 @@ findCudaLocation = do
     Just validLocation -> do
       putStrLn $ "Found CUDA toolkit under the following path: " ++ validLocation
       return $ CudaPath validLocation
-    Nothing -> do
-      -- allPaths <- sequence candidates
-      die $ "Failed to found CUDA location. Candidate locations were: " ++ show (map snd candidateCudaLocation)
+    Nothing -> die $ "Failed to found CUDA location. Candidate locations were: " ++ show (map snd candidateCudaLocation)
 
 -- Replicate the invocation of the postConf script, so that we can insert the
 -- arguments of --extra-include-dirs and --extra-lib-dirs as paths in CPPFLAGS
@@ -222,7 +220,6 @@ main = defaultMainWithHooks customHooks
 
     preConfHook :: Args -> ConfigFlags -> IO HookedBuildInfo
     preConfHook args flags = do
-      -- putStrLn $ show flags
       preConf simpleUserHooks args flags
 
     postConfHook :: Args -> ConfigFlags -> PackageDescription -> LocalBuildInfo -> IO ()
@@ -250,41 +247,6 @@ storeHookedBuildInfo hbi verbosity = do
     let infoFile = hookedBuildinfoFilepath
     putStrLn $ "Writing parameters to " ++ infoFile
     writeHookedBuildInfo infoFile hbi
-
--- runConfigureScript :: Verbosity -> Bool -> ConfigFlags -> LocalBuildInfo -> IO ()
--- runConfigureScript verbosity backwardsCompatHack flags lbi = do
---   env               <- getEnvironment
---   (ccProg, ccFlags) <- configureCCompiler verbosity (withPrograms lbi)
-
---   let env' = foldr appendToEnvironment env
---                [("CC",       ccProg)
---                ,("CFLAGS",   unwords ccFlags)
---                ,("CPPFLAGS", unwords $ map ("-I"++) (configExtraIncludeDirs flags))
---                ,("LDFLAGS",  unwords $ map ("-L"++) (configExtraLibDirs flags))
---                ]
-
---   handleNoWindowsSH $ rawSystemExitWithEnv verbosity "sh" args env'
-
---   where
---     args = "configure" : configureArgs backwardsCompatHack flags
-
---     appendToEnvironment (key, val) [] = [(key, val)]
---     appendToEnvironment (key, val) (kv@(k, v) : rest)
---      | key == k  = (key, v ++ " " ++ val) : rest
---      | otherwise = kv : appendToEnvironment (key, val) rest
-
---     handleNoWindowsSH action
---       | buildOS /= Windows
---       = action
-
---       | otherwise
---       = action
---           `catch` \ioe -> if isDoesNotExistError ioe
---                               then die notFoundMsg
---                               else throwIO ioe
-
---     notFoundMsg = "The package has a './configure' script. This requires a "
---                ++ "Unix compatibility toolchain such as MinGW+MSYS or Cygwin."
 
 
 getHookedBuildInfo :: Verbosity -> IO HookedBuildInfo
