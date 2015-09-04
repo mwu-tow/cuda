@@ -90,12 +90,8 @@ getCudaLibraryPath (CudaPath path) (Platform arch os) = path </> libSubpath
 getCudaLibraries :: [String]
 getCudaLibraries = ["cudart", "cuda"]
 
-cudaLibraryBuildInfo :: CudaPath -> Platform -> IO HookedBuildInfo
-cudaLibraryBuildInfo cudaPath platform@(Platform arch os) = do
-    let cppArchitectureFlag = case arch of
-          I386   -> " --cppopts=-m32"
-          X86_64 -> " --cppopts=-m64"
-          _      -> ""
+cudaLibraryBuildInfo :: CudaPath -> Platform -> Version -> IO HookedBuildInfo
+cudaLibraryBuildInfo cudaPath platform@(Platform arch os) ghcVersion = do
     let cudaLibraryPath = getCudaLibraryPath cudaPath platform
     -- Extra lib dirs are not needed on Windows somehow. On Linux their lack would cause an error: /usr/bin/ld: cannot find -lcudart
     -- Still, they do not cause harm so let's have them regardless of OS.
@@ -103,15 +99,21 @@ cudaLibraryBuildInfo cudaPath platform@(Platform arch os) = do
     let includeDirs = [getCudaIncludePath cudaPath]
     let ccOptions_ = map ("-I" ++) includeDirs
     let ldOptions_ = map ("-L" ++) extraLibDirs_
-    let c2hsOptionsFieldName = "x-extra-c2hs-options"
-    let c2hsOptionsValue = "--cppopts=-E -v" ++ cppArchitectureFlag
     let extraLibs_ = getCudaLibraries
+
+    -- Options for C2HS
+    let c2hsArchitectureFlag = case arch of I386   -> ["-m32"]
+                                            X86_64 -> ["-m64"]
+                                            _      -> []
+    let c2hsEmptyCaseFlag = ["-DUSE_EMPTY_CASE" | versionBranch ghcVersion >= [7,8]]
+    let c2hsCppOptions = c2hsArchitectureFlag ++ c2hsEmptyCaseFlag ++ ["-E"]
+    let c2hsOptions = unwords $ "-v" : map ("--cppopts=" ++) c2hsCppOptions
+    let extraOptionsC2Hs = ("x-extra-c2hs-options", c2hsOptions)
 
     -- Workaround issue with ghci linker not being able to find DLLs with names different from their import LIBs.
     extraGHCiLibs_ <- case os of
             Windows -> additionalGhciLibraries cudaLibraryPath extraLibs_
             _       -> return []
-
 
     let buildInfo = emptyBuildInfo
             { ccOptions = ccOptions_
@@ -120,7 +122,7 @@ cudaLibraryBuildInfo cudaPath platform@(Platform arch os) = do
             , extraLibDirs = extraLibDirs_
             -- , options = [(GHC, (map ("-optc" ++) ccOptions_) ++ (map ("-optl" ++ ) ldOptions_))]
             , extraGHCiLibs = extraGHCiLibs_
-            , customFieldsBI = [(c2hsOptionsFieldName,c2hsOptionsValue)]
+            , customFieldsBI = [extraOptionsC2Hs]
             }
     return (Just buildInfo, [])
 
@@ -222,13 +224,14 @@ main = defaultMainWithHooks customHooks
         in do
           cudalocation <- findCudaLocation
           let currentPlatform = hostPlatform lbi
+          let (CompilerId ghcFlavor ghcVersion) = compilerId $ compiler lbi
           noExtraFlags args
           -- confExists <- doesFileExist "configure"
           -- if confExists
           --    then runConfigureScript verbosity False flags lbi
           --    else die "configure script not found."
 
-          pbi <- cudaLibraryBuildInfo cudalocation currentPlatform
+          pbi <- cudaLibraryBuildInfo cudalocation currentPlatform ghcVersion
           storeHookedBuildInfo pbi normal
           --pbi <- getHookedBuildInfo verbosity
           let pkg_descr' = updatePackageDescription pbi pkg_descr
