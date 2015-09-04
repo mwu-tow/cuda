@@ -213,9 +213,9 @@ findCudaLocation = do
 main :: IO ()
 main = defaultMainWithHooks customHooks
   where
-    preprocessors = hookedPreProcessors autoconfUserHooks
-    customHooks   = autoconfUserHooks {
-      preConf             = preConfHook,
+    preprocessors = hookedPreProcessors simpleUserHooks
+    customHooks   = simpleUserHooks {
+      preBuild = \_ flags ->getHookedBuildInfo $ fromFlag $ buildVerbosity flags,
       postConf            = postConfHook,
       hookedPreProcessors = ("chs",ppC2hs) : filter (\x -> fst x /= "chs") preprocessors
     }
@@ -229,15 +229,11 @@ main = defaultMainWithHooks customHooks
     postConfHook args flags pkg_descr lbi
       = let verbosity = fromFlag (configVerbosity flags)
         in do
+          noExtraFlags args
+
           cudalocation <- findCudaLocation
           let currentPlatform = hostPlatform lbi
           let (CompilerId ghcFlavor ghcVersion) = compilerId $ compiler lbi
-          noExtraFlags args
-          -- confExists <- doesFileExist "configure"
-          -- if confExists
-          --    then runConfigureScript verbosity False flags lbi
-          --    else die "configure script not found."
-
           pbi <- cudaLibraryBuildInfo cudalocation currentPlatform ghcVersion
           storeHookedBuildInfo pbi normal
           --pbi <- getHookedBuildInfo verbosity
