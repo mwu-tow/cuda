@@ -29,7 +29,8 @@ Maintainer:             Trevor L. McDonell <tmcdonell@cse.unsw.edu.au>
 Homepage:               https://github.com/tmcdonell/cuda
 Bug-reports:            https://github.com/tmcdonell/cuda/issues
 Category:               Foreign
-Cabal-version:          >= 1.8
+-- Cabal 1.22 is needed because of Distribution.PackageDescription.extraGHCiLibs 
+Cabal-version:          >= 1.22 
 Tested-with:            GHC >= 7.6
 
 Build-type:             Custom
@@ -78,6 +79,7 @@ Library
 
   Build-tools:          c2hs >= 0.21
   Build-depends:        base >= 4 && < 5, bytestring
+  default-language:     Haskell2010
   Extensions:
   ghc-options:          -Wall -O2 -funbox-strict-fields -fwarn-tabs
   ghc-prof-options:     -fprof-auto -fprof-cafs
@@ -90,6 +92,7 @@ Executable nvidia-device-query
   Build-depends:        base >= 4 && < 5,
                         cuda,
                         pretty
+  default-language:     Haskell2010
 
 
 source-repository head
