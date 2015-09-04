@@ -71,6 +71,9 @@ getCudaLibraryPath (CudaPath path) (Platform arch os) = path </> libSubpath
          I386    -> "Win32"
          X86_64  -> "x64"
          _       -> error $ "Unexpected Windows architecture " ++ show arch ++ ". Please report this issue to https://github.com/tmcdonell/cuda/issues"
+
+      OSX -> "lib"
+
       -- For now just treat all non-Windows systems similarly
       _ -> case arch of
          I386    -> "lib"
@@ -83,8 +86,9 @@ getCudaLibraries = ["cudart", "cuda"]
 cudaLibraryBuildInfo :: CudaPath -> Platform -> IO HookedBuildInfo
 cudaLibraryBuildInfo cudaPath platform@(Platform arch os) = do
     let cppArchitectureFlag = case arch of
-          I386   -> "-m32"
-          X86_64 -> "-m64"
+          I386   -> " --cppopts=-m32"
+          X86_64 -> " --cppopts=-m64"
+          _      -> ""
     let cudaLibraryPath = getCudaLibraryPath cudaPath platform
     -- Extra lib dirs are not needed on Windows somehow. On Linux their lack would cause an error: /usr/bin/ld: cannot find -lcudart
     -- Still, they do not cause harm so let's have them regardless of OS.
@@ -93,7 +97,7 @@ cudaLibraryBuildInfo cudaPath platform@(Platform arch os) = do
     let ccOptions_ = map ("-I" ++) includeDirs
     let ldOptions_ = map ("-L" ++) extraLibDirs_
     let c2hsOptionsFieldName = "x-extra-c2hs-options"
-    let c2hsOptionsValue = "--cppopts=-E -v --cppopts=" ++ cppArchitectureFlag
+    let c2hsOptionsValue = "--cppopts=-E -v" ++ cppArchitectureFlag
     let extraLibs_ = getCudaLibraries
 
     -- Workaround issue with ghci linker not being able to find DLLs with names different from their import LIBs.
@@ -107,7 +111,7 @@ cudaLibraryBuildInfo cudaPath platform@(Platform arch os) = do
             , ldOptions = ldOptions_
             , extraLibs = extraLibs_
             , extraLibDirs = extraLibDirs_
-            -- , options = [(GHC, (map ("-optc" ++) includeDirCcFlags) ++ (map ("-optl" ++ ) libDirCcFlags))],
+            -- , options = [(GHC, (map ("-optc" ++) ccOptions_) ++ (map ("-optl" ++ ) ldOptions_))]
             , extraGHCiLibs = extraGHCiLibs_
             , customFieldsBI = [(c2hsOptionsFieldName,c2hsOptionsValue)]
             }
