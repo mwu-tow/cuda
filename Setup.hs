@@ -38,6 +38,8 @@ newtype CudaPath = CudaPath {
 -- This function takes *a path to* import library and returns name of corresponding DLL.
 -- Eg: "C:/CUDA/Toolkit/Win32/cudart.lib" -> "cudart32_70.dll"
 -- Internally it assumes that nm tool is present in PATH. This should be always true, as nm is distributed along with GHC.
+--
+-- The function is meant to be used on Windows. Other platforms may or may not work.
 importLibraryToDllFileName :: FilePath -> IO (Maybe FilePath)
 importLibraryToDllFileName importLibPath = do
   -- Sample output nm generates on cudart.lib
@@ -53,11 +55,16 @@ importLibraryToDllFileName importLibPath = do
   nmOutput <- getProgramInvocationOutput normal (simpleProgramInvocation "nm" [importLibPath])
   return $ find (isInfixOf ("" <.> dllExtension)) (lines nmOutput)
 
+-- The function is used to populate the extraGHCiLibs list on Windows platform.
+-- It takes libraries directory and .lib filenames and returns their corresponding dll filename.
+-- (Both filenames are stripped from extensions)
+--
+-- Eg: "C:\cuda\toolkit\lib\x64" -> ["cudart", "cuda"] -> ["cudart64_65", "ncuda"]
 additionalGhciLibraries :: FilePath -> [FilePath] -> IO [FilePath]
 additionalGhciLibraries libdir importLibs = do
-    candidateNames <- mapM importLibraryToDllFileName (map (\libname -> libdir </> libname <.> "lib") importLibs)
+    let libsAbsolutePaths = map (\libname -> libdir </> libname <.> "lib") importLibs
+    candidateNames <- mapM importLibraryToDllFileName libsAbsolutePaths
     let dllNames = map (\(Just dllname) -> dropExtension dllname) (filter isJust candidateNames)
-    print dllNames
     return dllNames
 
 getCudaIncludePath :: CudaPath -> FilePath
