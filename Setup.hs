@@ -157,7 +157,7 @@ validateLocation verbosity path = do
 -- If path is evaluable and points to valid CUDA toolkit returns True.
 validateIOLocation :: Verbosity -> IO FilePath -> IO Bool
 validateIOLocation verbosity iopath = do
-  let handler = (\e -> do notice verbosity ("Encountered an exception when resolving location: " ++ show e); return False) :: IOError -> IO Bool
+  let handler = (\e -> do notice verbosity ("Note: failed to resolve location: " ++ show e); return False) :: IOError -> IO Bool
   catch (iopath >>= validateLocation verbosity) handler
 
 
@@ -185,13 +185,13 @@ lookupProgramThrowing execName = do
 
 candidateCudaLocation :: [(IO FilePath, String)]
 candidateCudaLocation =
-  [
-    env "CUDA_PATH",
-    (nvccLocation, "nvcc compiler visible in PATH"),
-    (return "/usr/local/cuda", "hard-coded possible path")
+  [ env "CUDA_PATH"
+  , (nvccLocation, "nvcc compiler visible in PATH")
+  , hardcodedPath "/usr/local/cuda"
   ]
   where
     env s = (getEnv s, "environment variable `" ++ s ++ "`")
+    hardcodedPath p = (return p, "hardcoded location `" ++ p ++ "`")
     nvccLocation :: IO FilePath
     nvccLocation = do
       nvccPath <- lookupProgramThrowing nvccProgramName
