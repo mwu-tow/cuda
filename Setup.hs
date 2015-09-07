@@ -234,6 +234,20 @@ longError = unlines
   , "********************************************************************************"
   ]
 
+
+-- Runs CUDA detection procedure and stores .buildinfo to a file.
+generateAndStoreBuildInfo :: Verbosity -> Platform -> CompilerId -> FilePath -> IO ()
+generateAndStoreBuildInfo verbosity platform (CompilerId ghcFlavor ghcVersion) path = do
+  cudalocation <- findCudaLocation verbosity
+  pbi <- cudaLibraryBuildInfo cudalocation platform ghcVersion
+  storeHookedBuildInfo verbosity path pbi
+
+customBuildinfoFilepath :: FilePath
+customBuildinfoFilepath = "cuda" <.> "buildinfo"
+
+generatedBuldinfoFilepath :: FilePath
+generatedBuldinfoFilepath = customBuildinfoFilepath <.> "generated"
+
 -- Replicate the invocation of the postConf script, so that we can insert the
 -- arguments of --extra-include-dirs and --extra-lib-dirs as paths in CPPFLAGS
 -- and LDFLAGS into the environment
@@ -244,43 +258,41 @@ main = defaultMainWithHooks customHooks
     customHooks   = simpleUserHooks {
       preBuild = \_ flags ->getHookedBuildInfo $ fromFlag $ buildVerbosity flags,
       postConf            = postConfHook,
-      hookedPreProcessors = ("chs",ppC2hs) : filter (\x -> fst x /= "chs") preprocessors
+      hookedPreProcessors = ("chs", ppC2hs) : filter (\x -> fst x /= "chs") preprocessors
     }
 
     postConfHook :: Args -> ConfigFlags -> PackageDescription -> LocalBuildInfo -> IO ()
     postConfHook args flags pkg_descr lbi
       = let verbosity = fromFlag (configVerbosity flags)
+            currentPlatform = hostPlatform lbi
+            compilerId_ = (compilerId $ compiler lbi)
         in do
           noExtraFlags args
+          generateAndStoreBuildInfo verbosity currentPlatform compilerId_ generatedBuldinfoFilepath
 
-          cudalocation <- findCudaLocation verbosity
-          let currentPlatform = hostPlatform lbi
-          let (CompilerId ghcFlavor ghcVersion) = compilerId $ compiler lbi
-          pbi <- cudaLibraryBuildInfo cudalocation currentPlatform ghcVersion
-          storeHookedBuildInfo verbosity hookedBuildinfoFilepath pbi
-
-          let pkg_descr' = updatePackageDescription pbi pkg_descr
+          actualBuildInfoToUse <- getHookedBuildInfo verbosity
+          let pkg_descr' = updatePackageDescription actualBuildInfoToUse pkg_descr
           postConf simpleUserHooks args flags pkg_descr' lbi
 
 
-hookedBuildinfoFilepath :: FilePath
-hookedBuildinfoFilepath = "cuda" <.> "buildinfo"
-
 storeHookedBuildInfo :: Verbosity -> FilePath -> HookedBuildInfo -> IO ()
 storeHookedBuildInfo verbosity path hbi = do
-    let infoFile = hookedBuildinfoFilepath
-    notice verbosity $ "Storing parameters to " ++ infoFile
-    writeHookedBuildInfo infoFile hbi
+    notice verbosity $ "Storing parameters to " ++ path
+    writeHookedBuildInfo path hbi
 
 
 getHookedBuildInfo :: Verbosity -> IO HookedBuildInfo
 getHookedBuildInfo verbosity = do
-  maybe_infoFile <- defaultHookedPackageDesc
-  case maybe_infoFile of
-    Nothing       -> return emptyHookedBuildInfo
-    Just infoFile -> do
-      info verbosity $ "Reading parameters from " ++ infoFile
-      readHookedBuildInfo verbosity infoFile
+  doesCustomBuildInfoExists <- doesFileExist customBuildinfoFilepath
+  if doesCustomBuildInfoExists then do
+    notice verbosity $ "The user-provided buildinfo from file " ++ customBuildinfoFilepath ++ " will be used. To use default settings, delete this file."
+    readHookedBuildInfo verbosity customBuildinfoFilepath
+  else do
+    doesGeneratedBuildInfoExists <- doesFileExist generatedBuldinfoFilepath
+    if doesGeneratedBuildInfoExists then do
+      notice verbosity $ "The default buildinfo from file " ++ generatedBuldinfoFilepath ++ " will be used. To overwrite this, provide a custom " ++ customBuildinfoFilepath ++ " path."
+      readHookedBuildInfo verbosity generatedBuldinfoFilepath
+    else die $ "Unexpected failure. Neither the default " ++ generatedBuldinfoFilepath ++ " nor custom " ++ customBuildinfoFilepath ++ " do exist."
 
 
 -- Replicate the default C2HS preprocessor hook here, and inject a value for
