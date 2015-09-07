@@ -90,6 +90,12 @@ getCudaLibraryPath (CudaPath path) (Platform arch os) = path </> libSubpath
 getCudaLibraries :: [String]
 getCudaLibraries = ["cudart", "cuda"]
 
+getAppleBlocksOption :: IO [String]
+getAppleBlocksOption = do
+  let handler = (\_ -> return "") :: IOError -> IO String
+  fileContents <- catch (readFile "/usr/include/stdlib.h") handler -- If file does not exist, we'll end up wth an empty string.
+  return ["-U__BLOCKS__"  |  "__BLOCKS__" `isInfixOf` fileContents]
+
 cudaLibraryBuildInfo :: CudaPath -> Platform -> Version -> IO HookedBuildInfo
 cudaLibraryBuildInfo cudaPath platform@(Platform arch os) ghcVersion = do
     let cudaLibraryPath = getCudaLibraryPath cudaPath platform
@@ -107,14 +113,18 @@ cudaLibraryBuildInfo cudaPath platform@(Platform arch os) ghcVersion = do
                                             _      -> []
     let c2hsEmptyCaseFlag = ["-DUSE_EMPTY_CASE" | versionBranch ghcVersion >= [7,8]]
     let c2hsCppOptions = c2hsArchitectureFlag ++ c2hsEmptyCaseFlag ++ ["-E"]
-    let c2hsOptions = unwords $ "-v" : map ("--cppopts=" ++) c2hsCppOptions
+
+    -- On OSX we might add one more options to c2hs cpp.
+    appleBlocksOption <- case os of OSX -> getAppleBlocksOption; _   -> return []
+
+    let c2hsOptions = unwords $ "-v" : map ("--cppopts=" ++) (c2hsCppOptions ++ appleBlocksOption)
     let extraOptionsC2Hs = ("x-extra-c2hs-options", c2hsOptions)
     let buildInfo = emptyBuildInfo
             { ccOptions = ccOptions_
             , ldOptions = ldOptions_
             , extraLibs = extraLibs_
             , extraLibDirs = extraLibDirs_
-            -- , options = [(GHC, (map ("-optc" ++) ccOptions_) ++ (map ("-optl" ++ ) ldOptions_))]
+            , options = [(GHC, map ("-optc" ++) ccOptions_ ++ map ("-optl" ++ ) ldOptions_)]  -- Is this needed for anything?
             , customFieldsBI = [extraOptionsC2Hs]
             }
 
@@ -134,32 +144,32 @@ cudaLibraryBuildInfo cudaPath platform@(Platform arch os) ghcVersion = do
     return (Just adjustedBuildInfo, [])
 
 -- Checks whether given location looks like a valid CUDA toolkit directory
-validateLocation :: FilePath -> IO Bool
-validateLocation path = do
+validateLocation :: Verbosity -> FilePath -> IO Bool
+validateLocation verbosity path = do
   -- TODO: Ideally this should check also for cudart.lib and whether cudart exports relevant symbols.
   -- This should be achievable with some `nm` trickery
   let testedPath = path </> "include" </> "cuda.h"
   ret <- doesFileExist testedPath
-  putStrLn $ printf "The path %s was %s." path (if ret then "accepted" else "rejected, because file " ++ testedPath ++ " does not exist")
+  notice verbosity $ printf "The path %s was %s." path (if ret then "accepted" else "rejected, because file " ++ testedPath ++ " does not exist")
   return ret
 
 -- Evaluates IO to obtain the path, handling any possible exceptions.
 -- If path is evaluable and points to valid CUDA toolkit returns True.
-validateIOLocation :: IO FilePath -> IO Bool
-validateIOLocation iopath = do
-  let handler = (\e -> do putStrLn ("Encountered an exception when resolving location: " ++ show e); return False) :: IOError -> IO Bool
-  catch (iopath >>= validateLocation) handler
+validateIOLocation :: Verbosity -> IO FilePath -> IO Bool
+validateIOLocation verbosity iopath = do
+  let handler = (\e -> do notice verbosity ("Encountered an exception when resolving location: " ++ show e); return False) :: IOError -> IO Bool
+  catch (iopath >>= validateLocation verbosity) handler
 
 
-findFirstValidLocation :: [(IO FilePath, String)] -> IO (Maybe FilePath)
-findFirstValidLocation [] = return Nothing
-findFirstValidLocation (mx:mxs) = do
-  putStrLn $ "Checking candidate location: " ++ snd mx
-  headMatches <- validateIOLocation $ fst mx
+findFirstValidLocation :: Verbosity -> [(IO FilePath, String)] -> IO (Maybe FilePath)
+findFirstValidLocation _ [] = return Nothing
+findFirstValidLocation verbosity (mx:mxs) = do
+  info verbosity $ "Checking candidate location: " ++ snd mx
+  headMatches <- validateIOLocation  verbosity $ fst mx
   if headMatches
     then do x <- fst mx
             return $ Just x
-    else findFirstValidLocation mxs
+    else findFirstValidLocation verbosity mxs
 
 nvccProgramName :: String
 nvccProgramName = "nvcc"
@@ -196,14 +206,33 @@ candidateCudaLocation =
 --  1) Checking the CUDA_PATH environment variable
 --  2) Looking for `nvcc` in `PATH`
 --  3) Checking /usr/local/cuda
-findCudaLocation :: IO CudaPath
-findCudaLocation = do
-  firstValidLocation <- findFirstValidLocation candidateCudaLocation
+findCudaLocation :: Verbosity -> IO CudaPath
+findCudaLocation verbosity = do
+  firstValidLocation <- findFirstValidLocation verbosity candidateCudaLocation
   case firstValidLocation of
     Just validLocation -> do
-      putStrLn $ "Found CUDA toolkit under the following path: " ++ validLocation
+      notice verbosity $ "Found CUDA toolkit under the following path: " ++ validLocation
       return $ CudaPath validLocation
-    Nothing -> die $ "Failed to found CUDA location. Candidate locations were: " ++ show (map snd candidateCudaLocation)
+    Nothing -> die longError
+
+longError :: String
+longError = unlines
+  [ "********************************************************************************"
+  , ""
+  , "The configuration process failed to locate your CUDA installation. Ensure that"
+  , "you have installed both the developer driver and toolkit, available from:"
+  , ""
+  , "  http://developer.nvidia.com/cuda-downloads"
+  , ""
+  , "and make sure that `nvcc` is available in your PATH. Check the above output log"
+  , "and run the command directly to ensure it can be located."
+  , ""
+  , "If you have a non-standard installation, you can add additional search paths"
+  , "using --extra-include-dirs and --extra-lib-dirs. Note that 64-bit Linux flavours"
+  , "often require both `lib64` and `lib` library paths, in that order."
+  , ""
+  , "********************************************************************************"
+  ]
 
 -- Replicate the invocation of the postConf script, so that we can insert the
 -- arguments of --extra-include-dirs and --extra-lib-dirs as paths in CPPFLAGS
@@ -218,22 +247,18 @@ main = defaultMainWithHooks customHooks
       hookedPreProcessors = ("chs",ppC2hs) : filter (\x -> fst x /= "chs") preprocessors
     }
 
-    preConfHook :: Args -> ConfigFlags -> IO HookedBuildInfo
-    preConfHook args flags = do
-      preConf simpleUserHooks args flags
-
     postConfHook :: Args -> ConfigFlags -> PackageDescription -> LocalBuildInfo -> IO ()
     postConfHook args flags pkg_descr lbi
       = let verbosity = fromFlag (configVerbosity flags)
         in do
           noExtraFlags args
 
-          cudalocation <- findCudaLocation
+          cudalocation <- findCudaLocation verbosity
           let currentPlatform = hostPlatform lbi
           let (CompilerId ghcFlavor ghcVersion) = compilerId $ compiler lbi
           pbi <- cudaLibraryBuildInfo cudalocation currentPlatform ghcVersion
-          storeHookedBuildInfo pbi normal
-          --pbi <- getHookedBuildInfo verbosity
+          storeHookedBuildInfo verbosity hookedBuildinfoFilepath pbi
+
           let pkg_descr' = updatePackageDescription pbi pkg_descr
           postConf simpleUserHooks args flags pkg_descr' lbi
 
@@ -241,11 +266,10 @@ main = defaultMainWithHooks customHooks
 hookedBuildinfoFilepath :: FilePath
 hookedBuildinfoFilepath = "cuda" <.> "buildinfo"
 
-storeHookedBuildInfo :: HookedBuildInfo -> Verbosity -> IO ()
-storeHookedBuildInfo hbi verbosity = do
-    --let infoFile = hookedBuildinfoFilepath <.> "generated"
+storeHookedBuildInfo :: Verbosity -> FilePath -> HookedBuildInfo -> IO ()
+storeHookedBuildInfo verbosity path hbi = do
     let infoFile = hookedBuildinfoFilepath
-    putStrLn $ "Writing parameters to " ++ infoFile
+    notice verbosity $ "Storing parameters to " ++ infoFile
     writeHookedBuildInfo infoFile hbi
 
 
