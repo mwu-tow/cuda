@@ -125,7 +125,7 @@ cudaLibraryBuildInfo cudaPath platform@(Platform arch os) ghcVersion = do
   -- On OSX we might add one more options to c2hs cpp.
   appleBlocksOption <- case os of OSX -> getAppleBlocksOption; _   -> return []
 
-  let c2hsOptions = unwords $ "-v" : map ("--cppopts=" ++) (c2hsCppOptions ++ appleBlocksOption)
+  let c2hsOptions = unwords $ map ("--cppopts=" ++) (c2hsCppOptions ++ appleBlocksOption)
   let extraOptionsC2Hs = ("x-extra-c2hs-options", c2hsOptions)
   let buildInfo = emptyBuildInfo
           { ccOptions = ccOptions_
