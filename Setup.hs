@@ -77,7 +77,6 @@ getAppleBlocksOption = do
   fileContents <- catch (readFile "/usr/include/stdlib.h") handler -- If file does not exist, we'll end up wth an empty string.
   return ["-U__BLOCKS__"  |  "__BLOCKS__" `isInfixOf` fileContents]
 
-
 getCudaIncludePath :: CudaPath -> FilePath
 getCudaIncludePath (CudaPath path) = path </> "include"
 
@@ -106,50 +105,51 @@ getCudaLibraries = ["cudart", "cuda"]
 -- visible to underlying build tools.
 cudaLibraryBuildInfo :: CudaPath -> Platform -> Version -> IO HookedBuildInfo
 cudaLibraryBuildInfo cudaPath platform@(Platform arch os) ghcVersion = do
-    let cudaLibraryPath = getCudaLibraryPath cudaPath platform
-    -- Extra lib dirs are not needed on Windows somehow. On Linux their lack would cause an error: /usr/bin/ld: cannot find -lcudart
-    -- Still, they do not cause harm so let's have them regardless of OS.
-    let extraLibDirs_ = [cudaLibraryPath]
-    let includeDirs = [getCudaIncludePath cudaPath]
-    let ccOptions_ = map ("-I" ++) includeDirs
-    let ldOptions_ = map ("-L" ++) extraLibDirs_
-    let extraLibs_ = getCudaLibraries
+  let cudaLibraryPath = getCudaLibraryPath cudaPath platform
+  -- Extra lib dirs are not needed on Windows somehow. On Linux their lack would cause an error: /usr/bin/ld: cannot find -lcudart
+  -- Still, they do not cause harm so let's have them regardless of OS.
+  let extraLibDirs_ = [cudaLibraryPath]
+  let includeDirs = [getCudaIncludePath cudaPath]
+  let ccOptions_ = map ("-I" ++) includeDirs
+  let ldOptions_ = map ("-L" ++) extraLibDirs_
+  let ghcOptions = map ("-optc" ++) ccOptions_  ++  map ("-optl" ++ ) ldOptions_
+  let extraLibs_ = getCudaLibraries
 
-    -- Options for C2HS
-    let c2hsArchitectureFlag = case arch of I386   -> ["-m32"]
-                                            X86_64 -> ["-m64"]
-                                            _      -> []
-    let c2hsEmptyCaseFlag = ["-DUSE_EMPTY_CASE" | versionBranch ghcVersion >= [7,8]]
-    let c2hsCppOptions = c2hsArchitectureFlag ++ c2hsEmptyCaseFlag ++ ["-E"]
+  -- Options for C2HS
+  let c2hsArchitectureFlag = case arch of I386   -> ["-m32"]
+                                          X86_64 -> ["-m64"]
+                                          _      -> []
+  let c2hsEmptyCaseFlag = ["-DUSE_EMPTY_CASE" | versionBranch ghcVersion >= [7,8]]
+  let c2hsCppOptions = c2hsArchitectureFlag ++ c2hsEmptyCaseFlag ++ ["-E"]
 
-    -- On OSX we might add one more options to c2hs cpp.
-    appleBlocksOption <- case os of OSX -> getAppleBlocksOption; _   -> return []
+  -- On OSX we might add one more options to c2hs cpp.
+  appleBlocksOption <- case os of OSX -> getAppleBlocksOption; _   -> return []
 
-    let c2hsOptions = unwords $ "-v" : map ("--cppopts=" ++) (c2hsCppOptions ++ appleBlocksOption)
-    let extraOptionsC2Hs = ("x-extra-c2hs-options", c2hsOptions)
-    let buildInfo = emptyBuildInfo
-            { ccOptions = ccOptions_
-            , ldOptions = ldOptions_
-            , extraLibs = extraLibs_
-            , extraLibDirs = extraLibDirs_
-            , options = [(GHC, map ("-optc" ++) ccOptions_ ++ map ("-optl" ++ ) ldOptions_)]  -- Is this needed for anything?
-            , customFieldsBI = [extraOptionsC2Hs]
-            }
+  let c2hsOptions = unwords $ "-v" : map ("--cppopts=" ++) (c2hsCppOptions ++ appleBlocksOption)
+  let extraOptionsC2Hs = ("x-extra-c2hs-options", c2hsOptions)
+  let buildInfo = emptyBuildInfo
+          { ccOptions = ccOptions_
+          , ldOptions = ldOptions_
+          , extraLibs = extraLibs_
+          , extraLibDirs = extraLibDirs_
+          , options = [(GHC, ghcOptions)]  -- Is this needed for anything?
+          , customFieldsBI = [extraOptionsC2Hs]
+          }
 
-    let addSystemSpecificOptions :: Platform -> IO BuildInfo
-        addSystemSpecificOptions (Platform _ Windows) = do
-          -- Workaround issue with ghci linker not being able to find DLLs with names different from their import LIBs.
-          extraGHCiLibs_ <- additionalGhciLibraries cudaLibraryPath extraLibs_
-          return buildInfo
-            { extraGHCiLibs  = extraGHCiLibs  buildInfo ++ extraGHCiLibs_ }
-        addSystemSpecificOptions (Platform _ OSX) = return buildInfo
-            { customFieldsBI = customFieldsBI buildInfo ++ [("frameworks", "CUDA")]
-            , ldOptions      = ldOptions      buildInfo ++ ["-F/Library/Frameworks"]
-            }
-        addSystemSpecificOptions _ = return buildInfo
+  let addSystemSpecificOptions :: Platform -> IO BuildInfo
+      addSystemSpecificOptions (Platform _ Windows) = do
+        -- Workaround issue with ghci linker not being able to find DLLs with names different from their import LIBs.
+        extraGHCiLibs_ <- additionalGhciLibraries cudaLibraryPath extraLibs_
+        return buildInfo
+          { extraGHCiLibs  = extraGHCiLibs  buildInfo ++ extraGHCiLibs_ }
+      addSystemSpecificOptions (Platform _ OSX) = return buildInfo
+          { customFieldsBI = customFieldsBI buildInfo ++ [("frameworks", "CUDA")]
+          , ldOptions      = ldOptions      buildInfo ++ ["-F/Library/Frameworks"]
+          }
+      addSystemSpecificOptions _ = return buildInfo
 
-    adjustedBuildInfo <-addSystemSpecificOptions platform
-    return (Just adjustedBuildInfo, [])
+  adjustedBuildInfo <-addSystemSpecificOptions platform
+  return (Just adjustedBuildInfo, [])
 
 -- Checks whether given location looks like a valid CUDA toolkit directory
 validateLocation :: Verbosity -> FilePath -> IO Bool
