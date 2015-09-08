@@ -263,10 +263,28 @@ generatedBuldinfoFilepath = customBuildinfoFilepath <.> "generated"
 main :: IO ()
 main = defaultMainWithHooks customHooks
   where
+    readHook :: (a -> Distribution.Simple.Setup.Flag Verbosity) -> Args -> a -> IO HookedBuildInfo
+    readHook get_verbosity a flags = do
+        noExtraFlags a
+        getHookedBuildInfo verbosity
+      where
+        verbosity = fromFlag (get_verbosity flags)
+
     preprocessors = hookedPreProcessors simpleUserHooks
+
+    -- Our readHook implementation usees our getHookedBuildInfo.
+    -- We can't rely on cabal's autoconfUserHooks since they don't handle user
+    -- overwrites to buildinfo like we do.
     customHooks   = simpleUserHooks
-      { preBuild            = preBuildHook
-      , postConf            = postConfHook
+      { preBuild    = preBuildHook -- not using 'readHook' here because 'build' takes; extra args
+      , preClean    = readHook cleanVerbosity
+      , preCopy     = readHook copyVerbosity
+      , preInst     = readHook installVerbosity
+      , preHscolour = readHook hscolourVerbosity
+      , preHaddock  = readHook haddockVerbosity
+      , preReg      = readHook regVerbosity
+      , preUnreg    = readHook regVerbosity
+      , postConf    = postConfHook
       , hookedPreProcessors = ("chs", ppC2hs) : filter (\x -> fst x /= "chs") preprocessors
       }
 
