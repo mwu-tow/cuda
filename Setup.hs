@@ -64,10 +64,10 @@ importLibraryToDllFileName importLibPath = do
 -- Eg: "C:\cuda\toolkit\lib\x64" -> ["cudart", "cuda"] -> ["cudart64_65", "ncuda"]
 additionalGhciLibraries :: FilePath -> [FilePath] -> IO [FilePath]
 additionalGhciLibraries libdir importLibs = do
-    let libsAbsolutePaths = map (\libname -> libdir </> libname <.> "lib") importLibs
-    candidateNames <- mapM importLibraryToDllFileName libsAbsolutePaths
-    let dllNames = map (\(Just dllname) -> dropExtension dllname) (filter isJust candidateNames)
-    return dllNames
+  let libsAbsolutePaths = map (\libname -> libdir </> libname <.> "lib") importLibs
+  candidateNames <- mapM importLibraryToDllFileName libsAbsolutePaths
+  let dllNames = map (\(Just dllname) -> dropExtension dllname) (filter isJust candidateNames)
+  return dllNames
 
 -- OSX compatibility function
 -- Returns [] or ["U__BLOCKS__"]
@@ -128,11 +128,11 @@ cudaLibraryBuildInfo cudaPath platform@(Platform arch os) ghcVersion = do
   let c2hsOptions = unwords $ map ("--cppopts=" ++) (c2hsCppOptions ++ appleBlocksOption)
   let extraOptionsC2Hs = ("x-extra-c2hs-options", c2hsOptions)
   let buildInfo = emptyBuildInfo
-          { ccOptions = ccOptions_
-          , ldOptions = ldOptions_
-          , extraLibs = extraLibs_
-          , extraLibDirs = extraLibDirs_
-          , options = [(GHC, ghcOptions)]  -- Is this needed for anything?
+          { ccOptions      = ccOptions_
+          , ldOptions      = ldOptions_
+          , extraLibs      = extraLibs_
+          , extraLibDirs   = extraLibDirs_
+          , options        = [(GHC, ghcOptions)]  -- Is this needed for anything?
           , customFieldsBI = [extraOptionsC2Hs]
           }
 
@@ -140,8 +140,7 @@ cudaLibraryBuildInfo cudaPath platform@(Platform arch os) ghcVersion = do
       addSystemSpecificOptions (Platform _ Windows) = do
         -- Workaround issue with ghci linker not being able to find DLLs with names different from their import LIBs.
         extraGHCiLibs_ <- additionalGhciLibraries cudaLibraryPath extraLibs_
-        return buildInfo
-          { extraGHCiLibs  = extraGHCiLibs  buildInfo ++ extraGHCiLibs_ }
+        return buildInfo { extraGHCiLibs = extraGHCiLibs  buildInfo ++ extraGHCiLibs_ }
       addSystemSpecificOptions (Platform _ OSX) = return buildInfo
           { customFieldsBI = customFieldsBI buildInfo ++ [("frameworks", "CUDA")]
           , ldOptions      = ldOptions      buildInfo ++ ["-F/Library/Frameworks"]
@@ -158,7 +157,7 @@ validateLocation verbosity path = do
   -- This should be achievable with some `nm` trickery
   let testedPath = path </> "include" </> "cuda.h"
   ret <- doesFileExist testedPath
-  notice verbosity $ printf "The path %s was %s." path (if ret then "accepted" else "rejected, because file " ++ testedPath ++ " does not exist")
+  notice verbosity $ printf "The path %s was %s." path $ if ret then "accepted" else "rejected, because file " ++ testedPath ++ " does not exist"
   return ret
 
 -- Evaluates IO to obtain the path, handling any possible exceptions.
@@ -185,8 +184,8 @@ nvccProgramName = "nvcc"
 
 -- NOTE: this function throws an exception when there is no `nvcc` in PATH.
 -- The exception contains meaningful message.
-lookupProgramThrowing :: String -> IO FilePath
-lookupProgramThrowing execName = do
+findProgramLocationThrowing :: String -> IO FilePath
+findProgramLocationThrowing execName = do
   location <- findProgramLocation normal execName
   case location of
     Just validLocation -> return validLocation
@@ -204,7 +203,7 @@ candidateCudaLocation =
     hardcodedPath p = (return p, "hardcoded location `" ++ p ++ "`")
     nvccLocation :: IO FilePath
     nvccLocation = do
-      nvccPath <- lookupProgramThrowing nvccProgramName
+      nvccPath <- findProgramLocationThrowing nvccProgramName
       -- The obtained path is likely TOOLKIT/bin/nvcc
       -- We want to extraxt the TOOLKIT part
       let ret = takeDirectory $ takeDirectory nvccPath
