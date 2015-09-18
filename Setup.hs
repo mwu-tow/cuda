@@ -153,9 +153,24 @@ validateLinker verbosity (Platform X86_64 Windows) db = catch validateInner hand
       (ldConfiguredProgram, db') <- requireProgram normal ldProgram db -- Note: throws exception when there is no `ld`. Should not happen.
       let ldPath = programPath ldConfiguredProgram
       ldVersion <- getLdVersion verbosity ldPath
-      when (ldVersion < [2,25,1]) $ die $ printf "Detected ld.exe in version < 2.25.1. It is unable to correctly link programs using CUDA. This is a bug in GNU binutils that has been recently fixed. MSys2 maintainers backported it and published in their 2.25.1 binutils release. Please replace your `ld` with the fixed build. Your `ld` location is: `%s`" ldPath
+      when (ldVersion < [2,25,1]) $ die $ linkerBugOnWindowsMsg ldPath
 validateLinker _ _ _ = return ()
 
+linkerBugOnWindowsMsg ldPath = printf (unlines msg) ldPath
+  where
+    msg =
+      [ "Detected ld.exe in version < 2.25.1. This version has known bug on Windows x64 architecture, making it unable to correctly link programs using CUDA. The fix is available and MSys2 released fixed version of `ld` as part of their binutils package (version 2.25.1)."
+      , ""
+      , "To fix this issue, replace the `ld.exe` in your GHC installation with the correct binary. Please visit the folowing webpage for details:"
+      , "https://github.com/mwu-tow/cuda/wiki/Using-cuda-package-on-Windows"
+      , ""
+      , "The full path to the outdated `ld.exe` detected in your installation:"
+      , ""
+      , "> %s"
+      , ""
+      , "The corrected binary is avaible e. g. here: "
+      , "https://github.com/mwu-tow/cuda/raw/fixed-ld/ld.exe"
+      ]
 
 -- Generates build info with flags needed for CUDA Toolkit to be properly
 -- visible to underlying build tools.
