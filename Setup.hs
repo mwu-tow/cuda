@@ -126,6 +126,13 @@ getCudaLibraries (Platform _ os) =
     OSX -> []
     _   -> ["cudart", "cuda"]
 
+formatGhcOptions :: OS -> [String] -> [String] -> [String]
+formatGhcOptions os ccOptions ldOptions = ccFormatted ++ ldFormatted where
+    format Windows opt = "\"" ++ map (\c -> case c of '\\' -> '/'; _ -> c) opt ++ "\""
+    format _       opt = opt
+
+    ccFormatted = map (format os) ccOptions
+    ldFormatted = map (format os) ldOptions
 
 -- Generates build info with flags needed for CUDA Toolkit to be properly
 -- visible to underlying build tools.
@@ -454,4 +461,3 @@ versionInt (Version { versionBranch = n1:n2:_ })
                  _ : _ : _ -> ""
                  _         -> "0"
     in s1 ++ middle ++ s2
-
